@@ -1,0 +1,165 @@
+-- Loader Script ("YOUR_STAND_LOADER")
+
+getgenv().Owner = "DoWeNeedMen4"
+
+getgenv().Configuration = {
+    ['CrewID'] = 32570691,
+    ['AttackDistance'] = 75,
+    ['SafeLocation'] = Vector3.new(0, 100, 0),
+    ['MaskToBuy'] = "Skull",
+    ['GunModes'] = {"rifle","aug","lmg"},
+    ['AttackCooldown'] = 0.3,
+    ['AutoMask'] = true,
+    ['AutoSave'] = true,
+    ['Prefix'] = ".", -- your command prefix
+}
+
+-- Stand logic (embedded, self-contained)
+do
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local StarterGui = game:GetService("StarterGui")
+    local LocalPlayer = Players.LocalPlayer
+    local cfg = getgenv().Configuration
+    local whitelist = {[getgenv().Owner]=true}
+    local standSummoned, selectedGun, autoKill, targetKillName, autoSave = false, nil, false, nil, false
+
+    local function notify(msg)
+        pcall(function()
+          StarterGui:SetCore("SendNotification", {Title="Stand", Text=msg, Duration=3})
+        end)
+    end
+
+    local function isUser(name) return name == getgenv().Owner end
+    local function isWhitelisted(name) return whitelist[name] end
+    local function canTarget(attacker, target)
+        if isUser(attacker) then return true end
+        if isWhitelisted(attacker) then return not isWhitelisted(target) end
+        return false
+    end
+
+    local function getRemote(name)
+        return ReplicatedStorage:FindFirstChild(name)
+    end
+
+    -- Replace these with actual remote names from your game, if different:
+    local Punch = getRemote("PunchEvent")
+    local Shoot = getRemote("ShootEvent")
+    local BuyMask = getRemote("BuyMaskEvent")
+    local Knock = getRemote("KnockEvent")
+    local Bring = getRemote("BringEvent")
+    local Frame = getRemote("FrameEvent")
+
+    local function getDist(p)
+        local lp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local tp = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        return lp and tp and (lp.Position - tp.Position).Magnitude or math.huge
+    end
+
+    local function attackWithGun(p)
+        if Shoot and selectedGun and getDist(p) <= cfg.AttackDistance then
+            Shoot:FireServer(p.Character, selectedGun)
+        end
+    end
+
+    local function attackOnce(p)
+        if p and p.Character and getDist(p) <= cfg.AttackDistance then
+            attackWithGun(p)
+        else
+            notify("Invalid or distant target")
+        end
+    end
+
+    local function startAutoKill(name)
+        if autoKill then autoKill = false; targetKillName = nil; return end
+        local p = Players:FindFirstChild(name)
+        if not p then return notify("Target not found") end
+        if not standSummoned or not selectedGun then return notify("Summon and select gun first") end
+        if not canTarget(LocalPlayer.Name, name) then return notify("No permission") end
+        autoKill, targetKillName = true, name
+        notify("AutoKill: " .. name)
+        task.spawn(function()
+            while autoKill do
+                local t = Players:FindFirstChild(targetKillName)
+                if t and canTarget(LocalPlayer.Name, t.Name) then
+                    attackOnce(t)
+                else
+                    notify("Stopped Autokill")
+                    autoKill = false
+                    break
+                end
+                task.wait(cfg.AttackCooldown)
+            end
+        end)
+    end
+
+    local function auraKill()
+        if not standSummoned or not selectedGun then return notify("Summon & select gun first") end
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and not isWhitelisted(p.Name) and getDist(p) <= cfg.AttackDistance then
+                attackWithGun(p)
+            end
+        end
+    end
+
+    local function teleportSafe()
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then hrp.CFrame = CFrame.new(cfg.SafeLocation); notify("Teleported") end
+    end
+
+    local function startAutoSave()
+        autoSave = true
+        notify("AutoSave ON")
+        task.spawn(function()
+            while autoSave do
+                local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+                if hum and hum.Health < 5 then teleportSafe() end
+                task.wait(1)
+            end
+        end)
+    end
+
+    local function stopAutoSave()
+        autoSave = false
+        notify("AutoSave OFF")
+    end
+
+    LocalPlayer.Chatted:Connect(function(msg)
+        local args = msg:split(" ")
+        local cmd = args[1]:lower()
+        if args[1]:sub(1, #cfg.Prefix) ~= cfg.Prefix then return end
+        local sender = LocalPlayer.Name
+        if not (isUser(sender) or isWhitelisted(sender)) then return end
+
+        if cmd == cfg.Prefix.."summon" then
+            standSummoned = true; notify("Summoned")
+        elseif cmd == cfg.Prefix.."vanish" then
+            standSummoned = false; notify("Vanished")
+        elseif cmd == cfg.Prefix.."gun" and args[2] then
+            local gm = args[2]:lower()
+            for _, v in ipairs(cfg.GunModes) do
+                if v == gm then
+                    selectedGun = gm
+                    notify("Gun: " .. gm)
+                    return
+                end
+            end
+            notify("Invalid gun")
+        elseif cmd == cfg.Prefix.."kill" and args[2] then
+            local p = Players:FindFirstChild(args[2])
+            if p and canTarget(sender, args[2]) then attackOnce(p) end
+        elseif cmd == cfg.Prefix.."autokill" and args[2] then startAutoKill(args[2])
+        elseif cmd == cfg.Prefix.."aura" then auraKill()
+        elseif cmd == cfg.Prefix.."autosave" then startAutoSave()
+        elseif cmd == cfg.Prefix.."stopautosave" then stopAutoSave()
+        elseif cmd == cfg.Prefix.."gbring" and args[2] then
+            local p = Players:FindFirstChild(args[2]); if p and canTarget(sender, args[2]) and Bring then Bring:FireServer(p.Character) end
+        elseif cmd == cfg.Prefix.."gknock" and args[2] then
+            local p = Players:FindFirstChild(args[2]); if p and canTarget(sender, args[2]) and Knock then Knock:FireServer(p.Character) end
+        elseif cmd == cfg.Prefix.."frame" and args[2] then
+            local p = Players:FindFirstChild(args[2]); if p and canTarget(sender, args[2]) and Frame then Frame:FireServer(p.Character) end
+        end
+    end)
+
+    notify("Stand loaded!")
+end
